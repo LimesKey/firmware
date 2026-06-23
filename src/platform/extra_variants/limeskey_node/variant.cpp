@@ -18,6 +18,28 @@
 // from then on.
 void earlyInitVariant()
 {
+    // XIAO ESP32-C6 2.4 GHz (Wi-Fi/BLE) antenna switch. The module boots on its
+    // onboard ceramic antenna; this routes the radio to the external U.FL
+    // connector instead. GPIO3 LOW powers the RF switch; GPIO14 HIGH selects
+    // external (LOW = onboard). These are XIAO-internal control lines, not board
+    // nets.
+    //
+    // OPT-IN by design: driving the switch to an *open* U.FL port hurts 2.4 GHz
+    // performance, so the safe default (flag undefined) leaves the onboard antenna
+    // selected. Define XIAO_EXTERNAL_24_ANTENNA in platformio.ini only when a U.FL
+    // antenna is actually fitted. Verify the pin numbers/polarity against your
+    // XIAO ESP32-C6 revision first. (Does not affect the LoRa antenna, which is on
+    // the E22P module.)
+#ifdef XIAO_EXTERNAL_24_ANTENNA
+    constexpr int XIAO_C6_RF_SWITCH_EN = 3;  // LOW = RF switch powered on
+    constexpr int XIAO_C6_ANT_SELECT = 14;   // HIGH = external U.FL, LOW = onboard
+    pinMode(XIAO_C6_RF_SWITCH_EN, OUTPUT);
+    digitalWrite(XIAO_C6_RF_SWITCH_EN, LOW);
+    delay(100);
+    pinMode(XIAO_C6_ANT_SELECT, OUTPUT);
+    digitalWrite(XIAO_C6_ANT_SELECT, HIGH);
+#endif
+
 #ifdef GPS_SPI_CS_PIN
     pinMode(GPS_SPI_CS_PIN, OUTPUT);
     digitalWrite(GPS_SPI_CS_PIN, HIGH); // deselect NEO-M9N → release shared SPI MISO

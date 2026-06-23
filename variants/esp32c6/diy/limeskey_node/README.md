@@ -108,5 +108,5 @@ Operating frequency and TX power are runtime settings, not compiled in. Set your
 ## Notes
 
 - **Screen + audio excluded** (`MESHTASTIC_EXCLUDE_SCREEN`, `MESHTASTIC_EXCLUDE_AUDIO`) — the 4 MB flash on the ESP32-C6 is tight, matching `tlora_c6`.
-- **Bluetooth** is not yet supported by Meshtastic on the ESP32-C6; use USB or Wi-Fi to configure.
+- **Bluetooth** works on the ESP32-C6 (NimBLE) — the phone app pairs over BLE. Note that enabling Wi-Fi disables BLE until reboot (the two radios don't run concurrently here), so you configure over BLE *or* Wi-Fi/USB, not both at once. The BLE stack is torn down on that switch; see the teardown-race fix in `src/nimble/NimbleBluetooth.cpp` (a long-polling `FromRadio` read used to write into a freed characteristic and corrupt the heap).
 - **Battery:** no battery monitoring is configured in this variant yet (battery circuitry is present on the PCB but lower priority). Add `BATTERY_PIN` / `ADC_MULTIPLIER` once the divider is finalized.
