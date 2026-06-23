@@ -102,6 +102,13 @@ BLEServer *bleServer;
 static bool passkeyShowing;
 static std::atomic<uint16_t> nimbleBluetoothConnHandle{BLE_HS_CONN_HANDLE_NONE}; // BLE_HS_CONN_HANDLE_NONE means "no connection"
 
+// Number of FromRadio onRead callbacks currently executing in the NimBLE task. A
+// read can park here polling for a packet for up to ~20s; deinit() must not free
+// the BLE stack (and the characteristic the callback writes back into) while one
+// is in flight, or the late setValue() corrupts the heap. deinit() sets isDeInit
+// to break the poll loop, then waits for this to drain to zero before tearing down.
+static std::atomic<int> activeFromRadioReads{0};
+
 // Set by onDisconnect to defer (re)starting advertising to the main task. A stale-bond reconnect
 // triggers a MIC failure + NimBLE host reset; re-entering ble_gap_adv_* from the disconnect
 // callback while the host is mid-reset crashes (LoadProhibited), so the main task does it instead.
@@ -524,6 +531,19 @@ class NimbleBluetoothFromRadioCallback : public BLECharacteristicCallbacks
     {
         // CAUTION: This callback runs in the NimBLE task!!! Don't do anything except communicate with the main task's runOnce.
 
+        // Register as in-flight *before* checking isDeInit so deinit() can never
+        // observe a zero count while we are about to touch the (soon-to-be-freed)
+        // characteristic. The guard decrements on every return path.
+        activeFromRadioReads.fetch_add(1);
+        struct ReadGuard {
+            ~ReadGuard() { activeFromRadioReads.fetch_sub(1); }
+        } readGuard;
+
+        // If BLE is being torn down, the host structures and this characteristic
+        // are about to be freed — return immediately rather than poll/write.
+        if (nimbleBluetooth && nimbleBluetooth->isDeInit)
+            return;
+
         int currentReadCount = bluetoothPhoneAPI->readCount.fetch_add(1);
         int tries = 0;
         int startMillis = millis();
@@ -548,7 +568,8 @@ class NimbleBluetoothFromRadioCallback : public BLECharacteristicCallbacks
             // Wait for the main task to produce a packet for us, up to about 20 seconds.
             // It normally takes just a few milliseconds, but at initial startup, etc, the main task can get blocked for longer
             // doing various setup tasks.
-            while (bluetoothPhoneAPI->onReadCallbackIsWaitingForData && tries < 4000) {
+            while (bluetoothPhoneAPI->onReadCallbackIsWaitingForData && tries < 4000 &&
+                   !(nimbleBluetooth && nimbleBluetooth->isDeInit)) {
                 // Schedule the main task runOnce to run ASAP.
                 bluetoothPhoneAPI->setIntervalFromNow(0);
                 concurrency::mainDelay.interrupt(); // wake up main loop if sleeping
@@ -615,6 +636,11 @@ class NimbleBluetoothFromRadioCallback : public BLECharacteristicCallbacks
         LOG_DEBUG("BLE onRead(%d): onReadCallbackIsWaitingForData took %u ms, %d tries. numBytes=%d", currentReadCount,
                   finishMillis - startMillis, tries, numBytes);
 #endif
+
+        // deinit() may have begun while we were polling. If so, the characteristic
+        // is being freed — writing to it now would corrupt the heap, so bail.
+        if (nimbleBluetooth && nimbleBluetooth->isDeInit)
+            return;
 
         pCharacteristic->setValue(fromRadioBytes, numBytes);
 
@@ -803,6 +829,13 @@ void NimbleBluetooth::deinit()
     LOG_INFO("Disable bluetooth until reboot");
     isDeInit = true;
 
+    // A FromRadio onRead callback may be parked in the NimBLE task polling for a
+    // packet (up to ~20s). isDeInit makes that loop bail out; wait here (bounded)
+    // for any in-flight read to actually exit before we free the stack, so it can
+    // never write into a characteristic that BLEDevice::deinit() has freed.
+    for (int waitedMs = 0; activeFromRadioReads.load() > 0 && waitedMs < 250; waitedMs += 5)
+        delay(5);
+
 #ifdef BLE_LED
     digitalWrite(BLE_LED, LED_STATE_OFF);
 #endif
@@ -849,6 +882,8 @@ void NimbleBluetooth::setup()
     // NimbleBluetooth::clearBonds();
 
     LOG_INFO("Init the NimBLE bluetooth module");
+
+    isDeInit = false; // clear any prior teardown flag so read callbacks work after a re-init
 
 #ifdef ARCH_ESP32
     // Runs before BLEDevice::init() reads the bond store, but logs after the "Init" line above so
