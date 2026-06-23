@@ -26,6 +26,11 @@
 static constexpr uint32_t GPS_UPDATE_ALWAYS_ON_THRESHOLD_MS = 10 * 1000UL;
 static constexpr uint32_t GPS_FIX_HOLD_MAX_MS = 20000;
 
+#if defined(GPS_SPI_INTERFACE)
+// SPI-backed stand-in for the GPS serial port (see src/gps/UBloxSPIGNSS.h).
+class UBloxSPIGNSS;
+#endif
+
 typedef enum {
     GNSS_MODEL_ATGM336H,
     GNSS_MODEL_MTK,
@@ -215,7 +220,9 @@ class GPS : private concurrency::OSThread
     CallbackObserver<GPS, void *> notifyDeepSleepObserver = CallbackObserver<GPS, void *>(this, &GPS::prepareDeepSleep);
 
     /** If !NULL we will use this serial port to construct our GPS */
-#if defined(ARCH_RP2040)
+#if defined(GPS_SPI_INTERFACE)
+    static UBloxSPIGNSS *_serial_gps;
+#elif defined(ARCH_RP2040)
     static SerialUART *_serial_gps;
 #elif defined(ARCH_NRF52)
     static Uart *_serial_gps;

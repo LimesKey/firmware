@@ -23,6 +23,9 @@
 #include "SafeFile.h"
 #include "cas.h"
 #include "ubx.h"
+#if defined(GPS_SPI_INTERFACE)
+#include "UBloxSPIGNSS.h"
+#endif
 
 #ifdef ARCH_PORTDUINO
 #include "PortduinoGlue.h"
@@ -45,7 +48,9 @@ template <typename T, std::size_t N> std::size_t array_count(const T (&)[N])
 #define GPS_SERIAL_PORT Serial1
 #endif
 
-#if defined(ARCH_NRF52)
+#if defined(GPS_SPI_INTERFACE)
+UBloxSPIGNSS *GPS::_serial_gps = &GPS_SERIAL_PORT;
+#elif defined(ARCH_NRF52)
 Uart *GPS::_serial_gps = &GPS_SERIAL_PORT;
 #elif defined(ARCH_ESP32) || defined(ARCH_PORTDUINO) || defined(ARCH_STM32)
 HardwareSerial *GPS::_serial_gps = &GPS_SERIAL_PORT;

@@ -205,6 +205,15 @@ static const uint8_t _message_1HZ[] = {
     0x01, 0x00  // Time reference
 };
 
+// Per-port rate for NMEA messages on the u-blox SPI port. Boards that read the
+// GNSS over SPI (GPS_SPI_INTERFACE) must enable output on the SPI port; for every
+// other board this stays 0x00, leaving the legacy CFG-MSG payloads unchanged.
+#if defined(GPS_SPI_INTERFACE)
+#define UBX_NMEA_SPI_RATE 0x01
+#else
+#define UBX_NMEA_SPI_RATE 0x00
+#endif
+
 // Disable GLL. GLL - Geographic position (latitude and longitude), which provides the current geographical
 // coordinates.
 static const uint8_t _message_GLL[] = {
@@ -254,24 +263,24 @@ static const uint8_t _message_VTG[] = {
 
 // Enable RMC. RMC - Recommended Minimum data, the essential gps pvt (position, velocity, time) data.
 static const uint8_t _message_RMC[] = {
-    0xF0, 0x04, // NMEA ID for RMC
-    0x00,       // Rate for DDC
-    0x01,       // Rate for UART1
-    0x00,       // Rate for UART2
-    0x01,       // Rate for USB useful for native linux
-    0x00,       // Rate for SPI
-    0x00        // Reserved
+    0xF0, 0x04,        // NMEA ID for RMC
+    0x00,              // Rate for DDC
+    0x01,              // Rate for UART1
+    0x00,              // Rate for UART2
+    0x01,              // Rate for USB useful for native linux
+    UBX_NMEA_SPI_RATE, // Rate for SPI (enabled only on GPS_SPI_INTERFACE boards)
+    0x00               // Reserved
 };
 
 // Enable GGA. GGA - Global Positioning System Fix Data, which provides 3D location and accuracy data.
 static const uint8_t _message_GGA[] = {
-    0xF0, 0x00, // NMEA ID for GGA
-    0x00,       // Rate for DDC
-    0x01,       // Rate for UART1
-    0x00,       // Rate for UART2
-    0x01,       // Rate for USB, useful for native linux
-    0x00,       // Rate for SPI
-    0x00        // Reserved
+    0xF0, 0x00,        // NMEA ID for GGA
+    0x00,              // Rate for DDC
+    0x01,              // Rate for UART1
+    0x00,              // Rate for UART2
+    0x01,              // Rate for USB, useful for native linux
+    UBX_NMEA_SPI_RATE, // Rate for SPI (enabled only on GPS_SPI_INTERFACE boards)
+    0x00               // Reserved
 };
 
 // Disable UBX-AID-ALPSRV as it may confuse TinyGPS. The Neo-6 seems to send this message
