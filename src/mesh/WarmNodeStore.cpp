@@ -589,12 +589,22 @@ bool WarmNodeStore::save()
     h.entrySize = sizeof(WarmNodeEntry);
     h.crc = crc32Buffer(packed.data(), h.count * sizeof(WarmNodeEntry));
 
-    concurrency::LockGuard g(spiLock);
+    // SafeFile's openFile() and close() take spiLock internally, so we must NOT hold spiLock
+    // across them. concurrency::Lock is a non-recursive binary semaphore (see Lock.cpp), so
+    // re-taking it on the same task self-deadlocks the main loop, which trips the 90s task
+    // watchdog and resets the device. Lock only the mkdir and the bare f.write()s (SafeFile::write
+    // does not lock itself); let open/close lock themselves. This path runs after every warm-store
+    // eviction, so on a node whose node DB is permanently full it was deadlocking on every save.
+    spiLock->lock();
     FSCom.mkdir("/prefs");
+    spiLock->unlock();
 
     auto f = SafeFile(warmFileName, false);
-    f.write((const uint8_t *)&h, sizeof(h));
-    f.write((const uint8_t *)packed.data(), h.count * sizeof(WarmNodeEntry));
+    {
+        concurrency::LockGuard g(spiLock);
+        f.write((const uint8_t *)&h, sizeof(h));
+        f.write((const uint8_t *)packed.data(), h.count * sizeof(WarmNodeEntry));
+    }
     bool ok = f.close();
     if (!ok)
         LOG_ERROR("WarmStore: can't write %s", warmFileName);
