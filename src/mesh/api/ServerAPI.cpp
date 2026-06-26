@@ -9,10 +9,19 @@ template <typename T>
 ServerAPI<T>::ServerAPI(T &_client) : StreamAPI(&client), concurrency::OSThread("ServerAPI"), client(_client)
 {
     LOG_INFO("Incoming API connection");
+    // Route firmware log records to this network client. Emission is still
+    // gated at send time by config.security.debug_log_api_enabled, so this is
+    // a no-op for users who haven't opted in. Only one connection is open at a
+    // time, so the most recent connection wins the sink.
+    StreamAPI::logSink = this;
 }
 
 template <typename T> ServerAPI<T>::~ServerAPI()
 {
+    // Stop forwarding logs once this client goes away (only if we're still the
+    // active sink -- a newer connection may have already taken over).
+    if (StreamAPI::logSink == this)
+        StreamAPI::logSink = nullptr;
     client.stop();
 }
 

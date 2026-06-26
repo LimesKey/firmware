@@ -1,4 +1,5 @@
 #include "StreamAPI.h"
+#include "NodeDB.h" // for the global `config` (security.debug_log_api_enabled)
 #include "PowerFSM.h"
 #include "RTC.h"
 #include "Throttle.h"
@@ -238,6 +239,31 @@ void StreamAPI::emitLogRecord(meshtastic_LogRecord_Level level, const char *src,
     size_t len =
         pb_encode_to_bytes(txBufLog + HEADER_LEN, meshtastic_FromRadio_size, &meshtastic_FromRadio_msg, &fromRadioScratchLog);
     writeFrame(txBufLog, len);
+}
+
+// At most one network (TCP/Ethernet) client is attached at a time, registered
+// by ServerAPI. nullptr => USB/BLE only, nothing to forward to.
+StreamAPI *StreamAPI::logSink = nullptr;
+volatile bool StreamAPI::inApiLogForward = false;
+
+void StreamAPI::forwardLogToApi(meshtastic_LogRecord_Level level, const char *src, const char *format, va_list arg)
+{
+    StreamAPI *sink = logSink;
+    // Nothing attached, or we're already mid-forward (a nested LOG_ from the
+    // emit path below) -- in either case do nothing.
+    if (sink == nullptr || inApiLogForward)
+        return;
+    if (!config.security.debug_log_api_enabled)
+        return;
+
+    // emitLogRecord() -> writeFrame() can fail and, in ServerAPI, log a warning
+    // and close() the link. Holding this guard makes that nested LOG_ return
+    // immediately in RedirectablePrint::log() (via isForwardingLog()) instead of
+    // recursing here or deadlocking on the non-recursive inDebugPrint mutex.
+    inApiLogForward = true;
+    if (sink->canWrite)
+        sink->emitLogRecord(level, src, format, arg);
+    inApiLogForward = false;
 }
 
 /// Hookable to find out when connection changes

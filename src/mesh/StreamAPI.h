@@ -56,6 +56,20 @@ class StreamAPI : public PhoneAPI
     /// Check the current underlying physical link to see if the client is currently connected
     virtual bool checkIsConnected() override = 0;
 
+    /// Forward one firmware log line to the attached network API client (TCP or
+    /// Ethernet), if any, as a FromRadio.log_record frame. This is what lets
+    /// `meshtastic --host <ip>` and the app's debug panel read device logs over
+    /// the LAN, mirroring the USB (SerialConsole) and BLE log paths. Gated by
+    /// config.security.debug_log_api_enabled; a no-op when disabled or when no
+    /// network client is attached. Called from RedirectablePrint::log().
+    static void forwardLogToApi(meshtastic_LogRecord_Level level, const char *src, const char *format, va_list arg);
+
+    /// True only while forwardLogToApi() is mid-emit. RedirectablePrint::log()
+    /// checks this to bail out before taking the non-recursive inDebugPrint
+    /// mutex, so a "socket write failed" warning logged from deep inside the
+    /// forward path can neither recurse nor deadlock.
+    static bool isForwardingLog() { return inApiLogForward; }
+
   private:
     /**
      * Read any rx chars from the link and call handleToRadio
@@ -91,6 +105,13 @@ class StreamAPI : public PhoneAPI
     /// Low level function to emit a protobuf encapsulated log record
     void emitLogRecord(meshtastic_LogRecord_Level level, const char *src, const char *format, va_list arg);
 
+    /// The single network API client (TCP/Ethernet) that should receive log
+    /// records. Set by ServerAPI on connect, cleared on its destruction. nullptr
+    /// when no network client is attached (USB/BLE only). At most one network
+    /// connection is open at a time (see APIServerPort FIXME), so a single
+    /// pointer is sufficient.
+    static StreamAPI *logSink;
+
     virtual bool canWriteFrame(size_t frameLen) { return true; }
     virtual void onFrameWriteFailed(size_t frameLen, size_t writtenLen) {}
 
@@ -118,4 +139,7 @@ class StreamAPI : public PhoneAPI
     meshtastic_FromRadio fromRadioScratchLog = {};
     uint8_t txBufLog[MAX_STREAM_BUF_SIZE] = {0};
     concurrency::Lock streamLock;
+
+    /// Re-entrancy guard for forwardLogToApi(); see isForwardingLog().
+    static volatile bool inApiLogForward;
 };

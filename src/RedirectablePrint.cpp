@@ -5,6 +5,7 @@
 #include "configuration.h"
 #include "main.h"
 #include "memGet.h"
+#include "mesh/StreamAPI.h" // for forwarding log records to a network (TCP/Eth) API client
 #include "mesh/generated/meshtastic/mesh.pb.h"
 #include <assert.h>
 #include <cstring>
@@ -280,6 +281,11 @@ meshtastic_LogRecord_Level RedirectablePrint::getLogLevel(const char *logLevel)
 
 void RedirectablePrint::log(const char *logLevel, const char *format, ...)
 {
+    // If we're already mid-forward to a network API client, a nested LOG_ (e.g.
+    // a failed socket write inside ServerAPI) must not recurse or block on the
+    // non-recursive inDebugPrint mutex. Drop it before we allocate or lock.
+    if (StreamAPI::isForwardingLog())
+        return;
 
     // append \n to format
     size_t len = strlen(format);
@@ -335,6 +341,15 @@ void RedirectablePrint::log(const char *logLevel, const char *format, ...)
         va_copy(arg_copy, arg);
         log_to_syslog(logLevel, newFormat.get(), arg_copy);
         va_end(arg_copy);
+
+        // Forward to any network (TCP/Ethernet) API client, mirroring log_to_ble.
+        {
+            auto thread = concurrency::OSThread::currentThread;
+            va_copy(arg_copy, arg);
+            StreamAPI::forwardLogToApi(getLogLevel(logLevel), thread ? thread->ThreadName.c_str() : "", newFormat.get(),
+                                       arg_copy);
+            va_end(arg_copy);
+        }
 
         log_to_ble(logLevel, newFormat.get(), arg);
 
