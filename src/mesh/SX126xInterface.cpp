@@ -440,6 +440,13 @@ template <typename T> void SX126xInterface<T>::resetAGC()
 
     if (module.hal->digitalRead(module.getGpio())) {
         LOG_WARN("SX126x AGC reset: calibration did not complete within 50ms");
+        // Even when the calibrate stalls, re-apply the 0x8B5 RX-sensitivity patch before
+        // bailing. The warm sleep above already cleared bit 0 (see note at the late re-apply),
+        // and that register write is independent of calibration completing — skipping it here
+        // would silently drop RX boost for the full 60s until the next reset cycle.
+        if (module.SPIsetRegValue(0x8B5, 0x01, 0, 0) != RADIOLIB_ERR_NONE) {
+            LOG_WARN("SX126x resetAGC: failed to re-apply 0x8B5 RX sensitivity patch");
+        }
         startReceive();
         return;
     }
