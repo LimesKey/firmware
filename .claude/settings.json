@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(pio run -e limeskey_node)"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {
