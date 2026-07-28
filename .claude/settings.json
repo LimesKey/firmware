@@ -1,7 +1,20 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pio run -e limeskey_node)"
+      "Bash(pio run -e limeskey_node)",
+      "Bash(journalctl *)",
+      "Bash(pacman -Q*)",
+      "Bash(systemctl is-active *)",
+      "Bash(coredumpctl list*)",
+      "Bash(tc qdisc show *)",
+      "Bash(yay -Qu*)",
+      "Bash(bootctl list*)",
+      "Bash(bootctl status*)",
+      "Bash(wpctl status*)",
+      "Bash(systemctl --user is-active *)",
+      "Bash(systemctl --failed*)",
+      "Bash(systemctl status *)",
+      "Bash(systemctl is-enabled *)"
     ]
   },
   "hooks": {
