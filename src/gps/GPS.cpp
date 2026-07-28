@@ -1063,6 +1063,18 @@ bool GPS::setup()
             SEND_UBX_PACKET(0x06, 0x01, _message_RMC, "enable NMEA RMC", 500);
             SEND_UBX_PACKET(0x06, 0x01, _message_GGA, "enable NMEA GGA", 500);
 
+#ifdef LIMESKEY_DIAG
+            // Field-diagnostics telemetry on the SPI port only. Not a poll: the
+            // sniffer in UBloxSPIGNSS reads these off the stream as they arrive.
+            // A NAK here is not fatal - the LKD:gnss* lines simply report a stale
+            // age for whatever the module declined to send.
+            SEND_UBX_PACKET(0x06, 0x01, _message_LKD_NAV_SAT, "enable UBX NAV-SAT (LKD diag)", 500);
+            SEND_UBX_PACKET(0x06, 0x01, _message_LKD_NAV_DOP, "enable UBX NAV-DOP (LKD diag)", 500);
+            SEND_UBX_PACKET(0x06, 0x01, _message_LKD_NAV_STATUS, "enable UBX NAV-STATUS (LKD diag)", 500);
+            SEND_UBX_PACKET(0x06, 0x01, _message_LKD_MON_RF, "enable UBX MON-RF (LKD diag)", 500);
+            SEND_UBX_PACKET(0x06, 0x01, _message_LKD_MON_HW, "enable UBX MON-HW (LKD diag)", 500);
+#endif
+
             if (ublox_info.protocol_version >= 18) {
                 clearBuffer();
                 SEND_UBX_PACKET(0x06, 0x86, _message_PMS, "enable powersave for GPS", 500);

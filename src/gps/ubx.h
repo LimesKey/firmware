@@ -214,6 +214,35 @@ static const uint8_t _message_1HZ[] = {
 #define UBX_NMEA_SPI_RATE 0x00
 #endif
 
+#ifdef LIMESKEY_DIAG
+// Field-diagnostics telemetry (limeskey_node only, see src/limeskey/LimeskeyDiag.cpp).
+//
+// These enable a handful of UBX messages on the SPI port only, at 1 per N navigation
+// epochs. The diagnostics never poll: the sniffer in UBloxSPIGNSS reads these frames
+// off the byte stream as they flow past to the NMEA parser, which keeps it a passive
+// observer with no second producer on the adapter's ring buffer.
+//
+// Rate budget at 1 Hz nav: NAV-SAT is the big one at 8 + 12*numSvs bytes (~400 B with
+// 32 sats) every 15 s; the rest are under 70 B each. Well under what the 1 MHz SPI
+// link and the 1 KB ring absorb between polls.
+#define LKD_UBX_RATE_FAST 0x0F // every 15 nav epochs (~15 s at 1 Hz)
+#define LKD_UBX_RATE_SLOW 0x1E // every 30 nav epochs (~30 s at 1 Hz)
+
+// UBX-NAV-SAT: per-satellite C/N0, constellation and used-in-fix flags.
+static const uint8_t _message_LKD_NAV_SAT[] = {
+    0x01, 0x35, 0x00, 0x00, 0x00, 0x00, LKD_UBX_RATE_FAST, 0x00 // DDC, UART1, UART2, USB, SPI, reserved
+};
+// UBX-NAV-DOP: pDOP/hDOP/vDOP, the geometry half of a poor-fix diagnosis.
+static const uint8_t _message_LKD_NAV_DOP[] = {0x01, 0x04, 0x00, 0x00, 0x00, 0x00, LKD_UBX_RATE_FAST, 0x00};
+// UBX-NAV-STATUS: fix type and the module's own time-to-first-fix.
+static const uint8_t _message_LKD_NAV_STATUS[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x00, LKD_UBX_RATE_FAST, 0x00};
+// UBX-MON-RF: jamming indicator, AGC and noise level - the interference detector.
+static const uint8_t _message_LKD_MON_RF[] = {0x0A, 0x38, 0x00, 0x00, 0x00, 0x00, LKD_UBX_RATE_SLOW, 0x00};
+// UBX-MON-HW: noise per ms, AGC, and the antenna supervisor status (not wired on
+// this board - see the ant_valid=0 note in the LKD:gnss.hw line).
+static const uint8_t _message_LKD_MON_HW[] = {0x0A, 0x09, 0x00, 0x00, 0x00, 0x00, LKD_UBX_RATE_SLOW, 0x00};
+#endif // LIMESKEY_DIAG
+
 // Disable GLL. GLL - Geographic position (latitude and longitude), which provides the current geographical
 // coordinates.
 static const uint8_t _message_GLL[] = {

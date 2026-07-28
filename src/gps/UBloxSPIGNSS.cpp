@@ -4,6 +4,10 @@
 
 #include "SPILock.h" // spiLock + concurrency::LockGuard
 
+#ifdef LIMESKEY_DIAG
+#include "limeskey/LimeskeyDiag.h"
+#endif
+
 // The one global instance. GPS::_serial_gps points at this via GPS_SERIAL_PORT.
 UBloxSPIGNSS ubloxSPIGNSS;
 
@@ -25,10 +29,17 @@ void UBloxSPIGNSS::begin(unsigned long baud, uint32_t, int8_t, int8_t)
 bool UBloxSPIGNSS::ringPush(uint8_t b)
 {
     uint16_t next = (_head + 1) % GPS_SPI_RINGBUF;
-    if (next == _tail)
+    if (next == _tail) {
+#ifdef LIMESKEY_DIAG
+        _stats.ringOverflow++;
+#endif
         return false; // full — drop; reader will catch up next poll
+    }
     _ring[_head] = b;
     _head = next;
+#ifdef LIMESKEY_DIAG
+    noteRingLevel();
+#endif
     return true;
 }
 
@@ -59,9 +70,24 @@ void UBloxSPIGNSS::drain(size_t maxBytes)
     GPS_SPI_BUS.beginTransaction(_settings);
     digitalWrite(GPS_SPI_CS_PIN, LOW);
 
+#ifdef LIMESKEY_DIAG
+    _stats.drains++;
+#endif
+
     uint8_t idle = 0;
     for (size_t n = 0; n < maxBytes; n++) {
         uint8_t b = GPS_SPI_BUS.transfer(0xFF);
+#ifdef LIMESKEY_DIAG
+        // Tap every clocked byte *before* the ring, so the UBX parser sees frames whole:
+        // the idle-run rewind below can drop real UBX bytes out of the ring (a payload may
+        // legitimately contain 4+ consecutive 0xFF), and GPS.cpp's NMEA parser discards
+        // UBX anyway. The parser tracks UBX's explicit length field, so 0xFF filler
+        // between frames does not confuse it.
+        _stats.bytesRead++;
+        if (b == 0xFF)
+            _stats.bytesIdle++;
+        limeskeydiag::ubxTapFeed(b);
+#endif
         if (!ringPush(b))
             break; // ring full
         if (b == 0xFF) {
@@ -115,6 +141,13 @@ size_t UBloxSPIGNSS::write(const uint8_t *buffer, size_t size)
     digitalWrite(GPS_SPI_CS_PIN, LOW);
     for (size_t i = 0; i < size; i++) {
         uint8_t r = GPS_SPI_BUS.transfer(buffer[i]);
+#ifdef LIMESKEY_DIAG
+        _stats.bytesWritten++;
+        _stats.bytesRead++;
+        if (r == 0xFF)
+            _stats.bytesIdle++;
+        limeskeydiag::ubxTapFeed(r);
+#endif
         if (r != 0xFF)
             ringPush(r); // capture data the module streams back during the write
     }

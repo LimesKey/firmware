@@ -99,11 +99,36 @@ class UBloxSPIGNSS : public Stream
     void setRx(int8_t) {}
     void setTx(int8_t) {}
 
+#ifdef LIMESKEY_DIAG
+    // Bus-health counters for the LKD: diagnostics. Written only from the GPS thread
+    // (every entry point below is called from there); read from the diag thread, which
+    // tolerates a torn read of an individual counter. See LimeskeyDiag.cpp.
+    struct BusStats {
+        uint32_t bytesRead;    // bytes clocked in by drain(), including 0xFF filler
+        uint32_t bytesIdle;    // of those, how many were 0xFF (filler / "nothing to send")
+        uint32_t bytesWritten; // bytes clocked out by write()
+        uint32_t drains;       // drain() calls that actually touched the bus
+        uint32_t ringOverflow; // ringPush() rejections (reader fell behind)
+        uint16_t ringHighWater;
+    };
+    const BusStats &busStats() const { return _stats; }
+#endif
+
   private:
     void drain(size_t maxBytes); // clock the module under spiLock; push real bytes to the ring
     bool ringPush(uint8_t b);
     int ringPop();
     inline uint16_t ringCount() const { return (_head + GPS_SPI_RINGBUF - _tail) % GPS_SPI_RINGBUF; }
+
+#ifdef LIMESKEY_DIAG
+    BusStats _stats = {};
+    inline void noteRingLevel()
+    {
+        uint16_t n = ringCount();
+        if (n > _stats.ringHighWater)
+            _stats.ringHighWater = n;
+    }
+#endif
 
     SPISettings _settings{GPS_SPI_HZ, MSBFIRST, SPI_MODE0};
     unsigned long _baud = 0;
