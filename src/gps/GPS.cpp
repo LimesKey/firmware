@@ -8,10 +8,10 @@
 #include "GpioLogic.h"
 #include "NodeDB.h"
 #include "PowerMon.h"
-#include "RTC.h"
 #include "Throttle.h"
 #include "buzz.h"
 #include "concurrency/Periodic.h"
+#include "gps/RTC.h"
 #include "meshUtils.h"
 
 #include "main.h" // pmu_found
@@ -28,6 +28,7 @@
 #endif
 
 #ifdef ARCH_PORTDUINO
+#include "GpsdSerial.h"
 #include "PortduinoGlue.h"
 #include "meshUtils.h"
 #include <algorithm>
@@ -102,8 +103,9 @@ struct GPSProbeCacheRecord {
 
 bool isValidGnssModel(uint8_t model)
 {
-    // Keep persisted values bounded to known enum range.
-    return model <= static_cast<uint8_t>(GNSS_MODEL_CM121);
+    // Only real chip identifiers belong in the probe cache.
+    // GNSS_MODEL_UNKNOWN and GNSS_MODEL_GENERIC_NMEA are runtime-only values.
+    return model != static_cast<uint8_t>(GNSS_MODEL_UNKNOWN) && model < static_cast<uint8_t>(GNSS_MODEL_GENERIC_NMEA);
 }
 
 bool isValidProbeBaud(uint32_t baud)
@@ -1906,6 +1908,10 @@ std::unique_ptr<GPS> GPS::createGps()
         // They are not used for any hardware access.
         _rx_gpio = 1;
         _tx_gpio = 1;
+        if (!portduino_config.gpsd_host.empty()) {
+            gpsdSerial.setAddress(portduino_config.gpsd_host, portduino_config.gpsd_port);
+            _serial_gps = &gpsdSerial;
+        }
     } else
         return nullptr;
 #endif
@@ -1915,6 +1921,11 @@ std::unique_ptr<GPS> GPS::createGps()
     auto new_gps = std::unique_ptr<GPS>(new GPS());
     new_gps->rx_gpio = _rx_gpio;
     new_gps->tx_gpio = _tx_gpio;
+#ifdef ARCH_PORTDUINO
+    // Skip chip-specific probing for gpsd - it's a generic NMEA stream.
+    if (!portduino_config.gpsd_host.empty())
+        new_gps->gnssModel = GNSS_MODEL_GENERIC_NMEA;
+#endif
 
     GpioVirtPin *virtPin = new GpioVirtPin();
     new_gps->enablePin = virtPin; // Always at least populate a virtual pin
@@ -2195,11 +2206,6 @@ bool GPS::hasLock()
     return false;
 }
 
-bool GPS::hasFlow()
-{
-    return reader.passedChecksum() > 0;
-}
-
 bool GPS::whileActive()
 {
     unsigned int charsInBuf = 0;
@@ -2260,6 +2266,11 @@ int32_t GPS::disable()
     setPowerState(GPS_OFF);
 
     return INT32_MAX;
+}
+
+bool GPS::isEnabled()
+{
+    return enabled;
 }
 
 void GPS::toggleGpsMode()

@@ -74,6 +74,8 @@ static const uint8_t LOW_ENTROPY_HASHES[][32] = {
      0x37, 0x82, 0x8d, 0xb2, 0xcc, 0xd8, 0x97, 0x40, 0x9a, 0x5c, 0x8f, 0x40, 0x55, 0xcb, 0x4c, 0x3e}};
 static const char LOW_ENTROPY_WARNING[] = "Compromised keys were detected and regenerated.";
 #endif
+static const char LICENSED_IDENTITY_MIGRATION_WARNING[] =
+    "Licensed signing generated a new identity key; this node identity changed.";
 /*
 DeviceState versions used to be defined in the .proto file but really only this function cares.  So changed to a
 #define here.
@@ -90,6 +92,15 @@ DeviceState versions used to be defined in the .proto file but really only this 
 // at boot via the parallel deviceonly_legacy descriptor and re-saved as v25.
 #define DEVICESTATE_MIN_VER 24
 
+// One-time behavioral migration marker for the 2.8 position/telemetry opt-in flip.
+// Deliberately kept separate from DEVICESTATE_CUR_VER: that constant also drives the
+// NodeDatabase slim-schema legacy gate (NodeDB.cpp, `nodeDatabase.version < CUR_VER`),
+// so bumping it would wrongly re-run the v24 legacy decoder on already-migrated v25
+// node DBs. This watermark is stamped only onto channelFile.version / moduleConfig.version
+// once the opt-in migration has run. RESERVES 26 - the next real on-disk schema change
+// should raise DEVICESTATE_CUR_VER to 27, not 26.
+#define POSITION_TELEMETRY_OPTIN_VER 26
+
 extern meshtastic_DeviceState devicestate;
 extern meshtastic_NodeDatabase nodeDatabase;
 extern meshtastic_ChannelFile channelFile;
@@ -103,11 +114,57 @@ extern meshtastic_Position localPosition;
 static constexpr const char *deviceStateFileName = "/prefs/device.proto";
 static constexpr const char *legacyPrefFileName = "/prefs/db.proto";
 static constexpr const char *nodeDatabaseFileName = "/prefs/nodes.proto";
-static constexpr const char *configFileName = "/prefs/config.proto";
+// Event builds isolate radio profiles so normal firmware resumes its config and channels after OTA.
+static constexpr const char *STANDARD_CONFIG_FILE_NAME = "/prefs/config.proto";
+static constexpr const char *STANDARD_CHANNEL_FILE_NAME = "/prefs/channels.proto";
+static constexpr const char *EVENT_CONFIG_FILE_NAME = "/prefs/event-config.proto";
+static constexpr const char *EVENT_CHANNEL_FILE_NAME = "/prefs/event-channels.proto";
+static constexpr const char *STANDARD_BACKUP_FILE_NAME = "/backups/backup.proto";
+static constexpr const char *EVENT_BACKUP_FILE_NAME = "/backups/event-backup.proto";
+
+struct RadioProfileStoragePaths {
+    const char *config;
+    const char *channels;
+    const char *backup;
+};
+
+constexpr RadioProfileStoragePaths radioProfileStoragePaths(bool eventMode)
+{
+    return eventMode ? RadioProfileStoragePaths{EVENT_CONFIG_FILE_NAME, EVENT_CHANNEL_FILE_NAME, EVENT_BACKUP_FILE_NAME}
+                     : RadioProfileStoragePaths{STANDARD_CONFIG_FILE_NAME, STANDARD_CHANNEL_FILE_NAME, STANDARD_BACKUP_FILE_NAME};
+}
+
+// Reserve event files and their atomic temporaries before seeding, preventing retry formatting on full storage.
+static constexpr size_t EVENT_PROFILE_STORAGE_RESERVATION_BYTES = 2 * (meshtastic_LocalConfig_size + meshtastic_ChannelFile_size);
+
+constexpr bool hasEventProfileStorageSpace(size_t totalBytes, size_t usedBytes)
+{
+    return usedBytes <= totalBytes && totalBytes - usedBytes >= EVENT_PROFILE_STORAGE_RESERVATION_BYTES;
+}
+
+constexpr bool shouldDeferBootPersistence(bool bootInitializationInProgress, bool configLoadComplete, bool configDecodeFailed)
+{
+    return bootInitializationInProgress && (!configLoadComplete || configDecodeFailed);
+}
+
+#if USERPREFS_EVENT_MODE
+static constexpr auto RADIO_PROFILE_STORAGE = radioProfileStoragePaths(true);
+#else
+static constexpr auto RADIO_PROFILE_STORAGE = radioProfileStoragePaths(false);
+#endif
+static constexpr const char *configFileName = RADIO_PROFILE_STORAGE.config;
+static constexpr const char *channelFileName = RADIO_PROFILE_STORAGE.channels;
+static constexpr const char *backupFileName = RADIO_PROFILE_STORAGE.backup;
 static constexpr const char *uiconfigFileName = "/prefs/uiconfig.proto";
 static constexpr const char *moduleConfigFileName = "/prefs/module.proto";
-static constexpr const char *channelFileName = "/prefs/channels.proto";
-static constexpr const char *backupFileName = "/backups/backup.proto";
+
+// An unverified config load only endangers the radio profile, so only these files take part in
+// boot-write deferral. Lives next to the path table above so the two cannot drift apart.
+inline bool isRadioProfileFile(const char *filename)
+{
+    return strcmp(filename, configFileName) == 0 || strcmp(filename, channelFileName) == 0 ||
+           strcmp(filename, backupFileName) == 0;
+}
 
 /// Given a node, return how many seconds in the past (vs now) that we last heard from it
 uint32_t sinceLastSeen(const meshtastic_NodeInfoLite *n);
@@ -147,12 +204,22 @@ inline bool shouldDropPacketForPreHop(const meshtastic_MeshPacket &p)
     if (isFromUs(&p)) {
         return false; // local-originated packets should never be dropped by pre-hop drop policy
     }
-    return classifyHopStart(p) != HopStartStatus::VALID;
+    // Pre-decode: the channel-encrypted bitfield isn't readable yet, so a missing/unknown hop_start can't be
+    // distinguished from a modern packet. Only drop the provably-corrupt case here; the bitfield-dependent
+    // verdict is re-checked post-decode in Router::handleReceived.
+    return classifyHopStart(p) == HopStartStatus::INVALID;
 #endif
 }
 
 /// Rate-limited debug log when hop_start is invalid/missing and packet is dropped.
 void logHopStartDrop(const meshtastic_MeshPacket &p, const char *context);
+
+/// 2.8 position/telemetry opt-in migration (pure field mutators; exposed for native tests).
+/// Disable position broadcast on every PUBLIC/default-PSK channel (precision -> 0); private-PSK
+/// channels (deliberate trusted groups) are left untouched.
+void optInDisablePositionSharing(meshtastic_ChannelFile &cf);
+/// Force all mesh-broadcast device telemetry (and the MQTT map-report location) back to opt-in/off.
+void optInDisableTelemetryBroadcast(meshtastic_LocalModuleConfig &mc);
 
 enum LoadFileResult {
     // Successfully opened the file
@@ -202,6 +269,7 @@ class NodeDB
 
     bool keyIsLowEntropy = false;
     bool hasWarned = false;
+    bool licensedIdentityMigrationPending = false;
 
     /// don't do mesh based algorithm for node id assignment (initially)
     /// instead just store in flash - possibly even in the initial alpha release do this hack
@@ -236,9 +304,9 @@ class NodeDB
      */
     void updateTelemetry(uint32_t nodeId, const meshtastic_Telemetry &t, RxSource src = RX_SRC_RADIO);
 
-    /** Update user info and channel for this node based on received user data
-     */
-    bool updateUser(uint32_t nodeId, meshtastic_User &p, uint8_t channelIndex = 0);
+    /** Update user info and channel for this node based on received user data.
+     * A known signer's identity is only learned when xeddsaSigned; defaults false so callers fail closed. */
+    bool updateUser(uint32_t nodeId, meshtastic_User &p, uint8_t channelIndex = 0, bool xeddsaSigned = false);
 
     /*
      * Sets a node either favorite or unfavorite. Returns true if the node ends
@@ -337,11 +405,42 @@ class NodeDB
     WarmNodeStore warmStore;
 #endif
 
-    /// Copy the 32-byte public key for node n — hot store first, then the warm
+    /// Copy the 32-byte public key for node n - hot store first, then the warm
     /// tier. Returns false if we don't know a key for n.
     bool copyPublicKey(NodeNum n, meshtastic_NodeInfoLite_public_key_t &out);
 
-    /// Resolve a node's device role — hot store (with user) first, then the role
+    /// Copy the 32-byte key for n from the AUTHORITATIVE tiers only (hot, then warm; never
+    /// opportunistic caches) - the pin reference for caches that mirror NodeDB's key hygiene.
+    bool copyPublicKeyAuthoritative(NodeNum n, meshtastic_NodeInfoLite_public_key_t &out);
+
+    /// Key for the inbound-decrypt path: authoritative (hot/warm), or a cold-tier cache key only when
+    /// it is signer-proven. Keeps unverified TOFU cache keys from backing pki_encrypted attribution.
+    bool copyPublicKeyForDecrypt(NodeNum n, meshtastic_NodeInfoLite_public_key_t &out);
+
+    /// True if n is a known XEdDSA signer for exactly `key32` (hot signed bitfield or warm
+    /// signer bit); the key match stops a rotated key inheriting a stale signer verdict.
+    bool isVerifiedSignerForKey(NodeNum n, const uint8_t *key32);
+
+    /// Key-agnostic "should n's signable traffic arrive signed", per hot bitfield or warm signer
+    /// bit - hot-only gates would let a warm-evicted signer be impersonated with unsigned frames.
+    bool isKnownXeddsaSigner(NodeNum n);
+
+    /// Provenance of a bare-key commit that deliberately bypasses updateUser()'s
+    /// User-payload / TOFU-pin path. Maps to the TrafficManagement cache's `proven` flag:
+    /// only ManuallyVerified vouches for possession of exactly this key.
+    enum class KeyCommitTrust : uint8_t {
+        AdminChannelProven, // possession shown to the admin channel (AEAD) - TOFU-grade for signing
+        ManuallyVerified,   // the user confirmed possession of exactly this key
+    };
+
+    /// THE primitive for key writes that bypass updateUser() (no User payload; provenance
+    /// differs from a received NodeInfo): writes the 32-byte key to the hot store and
+    /// write-through to the TrafficManagement NodeInfo cache. Any future direct key-write
+    /// site must call this rather than assigning info->public_key, or the TrafficManagement
+    /// cache silently diverges until the next hourly reconcile.
+    void commitRemoteKey(NodeNum n, const uint8_t key32[32], KeyCommitTrust trust);
+
+    /// Resolve a node's device role - hot store (with user) first, then the role
     /// cached in the warm tier, else CLIENT. Lets role-aware policy keep firing for
     /// nodes that have aged out of the hot store.
     meshtastic_Config_DeviceConfig_Role getNodeRole(NodeNum n);
@@ -412,7 +511,7 @@ class NodeDB
         emptyNodeDatabase.version = DEVICESTATE_CUR_VER;
         size_t nodeDatabaseSize;
         pb_get_encoded_size(&nodeDatabaseSize, meshtastic_NodeDatabase_fields, &emptyNodeDatabase);
-        // Decode-stream size ceiling only — no buffer this big is allocated (load
+        // Decode-stream size ceiling only - no buffer this big is allocated (load
         // streams from the file). Sized for the largest file any prior firmware
         // could write (250-node ESP32-S3, satellites uncapped) so capacity
         // downgrades / peer backups still decode; excess is trimmed after load.
@@ -455,6 +554,8 @@ class NodeDB
     /// @param privateKey Optional 32-byte private key to use. If nullptr, generates new random keys.
     bool generateCryptoKeyPair(const uint8_t *privateKey = nullptr);
 
+    bool notifyPendingLicensedIdentityMigration();
+
     bool createNewIdentity();
 
     bool backupPreferences(meshtastic_AdminMessage_BackupLocation location);
@@ -480,7 +581,7 @@ class NodeDB
     /// Returns true iff every encrypted file decrypted and decoded cleanly.
     /// On false the caller MUST treat the storage as corrupt: leave the
     /// connection unauthenticated, emit a LOCKED(storage_corrupt) status,
-    /// and refuse to call setAdminAuthorized — otherwise a subsequent
+    /// and refuse to call setAdminAuthorized - otherwise a subsequent
     /// set_config would re-encrypt a wrong baseline (the locked-default
     /// values still resident in `config` / `channelFile` / `nodeDatabase`)
     /// and overwrite the operator's persisted state.
@@ -489,7 +590,7 @@ class NodeDB
     /// Disable lockdown: decrypt every encrypted pref file back to plaintext,
     /// then remove the DEK / token / counter / backoff artifacts. Requires
     /// EncryptedStorage to be unlocked (DEK in RAM). Returns false if any
-    /// file failed to revert — in which case the DEK is still present and the
+    /// file failed to revert - in which case the DEK is still present and the
     /// device remains in lockdown so the operator can retry. APPROTECT is not
     /// reversed. Called from the main loop via lockdownDisablePending.
     bool disableLockdownToPlaintext();
@@ -506,9 +607,22 @@ class NodeDB
     bool duplicateWarned = false;
     bool localPositionUpdatedSinceBoot = false;
     bool migrationSavePending = false;
-    uint32_t lastNodeDbSave = 0;    // when we last saved our db to flash
-    uint32_t lastBackupAttempt = 0; // when we last tried a backup automatically or manually
-    uint32_t lastSort = 0;          // When last sorted the nodeDB
+    /// Set when loadFromDisk() hit a present-but-undecodable config (DECODE_FAILED). The ctor uses it to
+    /// skip boot keygen and skip persisting defaults, so a transient read failure can't change our NodeNum
+    /// or overwrite the on-disk config. Cleared at the top of every loadFromDisk() run.
+    bool configDecodeFailed = false;
+    // Defer automatic writes until config load is healthy to protect device and node data from damaged configs.
+    bool bootInitializationInProgress = true;
+    bool configLoadComplete = false;
+#if USERPREFS_EVENT_MODE
+    // The active event profile is intentionally non-durable when there was not
+    // enough room to create it safely at boot. A later boot retries the check.
+    bool eventProfileStorageUnavailable = false;
+#endif
+    uint32_t lastNodeDbSave = 0;     // when we last saved our db to flash
+    uint32_t lastFullEvictionMs = 0; // when we last evicted to admit a new node, once the db is full
+    uint32_t lastBackupAttempt = 0;  // when we last tried a backup automatically or manually
+    uint32_t lastSort = 0;           // When last sorted the nodeDB
 
     /*
      * Internal boolean to track sorting paused
@@ -525,6 +639,7 @@ class NodeDB
     // Grant the unit-test shim access to the private maintenance paths below
     // (migration / cleanup / eviction) without relaxing production access.
     friend class NodeDBTestShim;
+    friend class MockNodeDB;
 #endif
 
     /// purge db entries without user info
@@ -567,7 +682,7 @@ class NodeDB
     bool migrateLegacyNodeDatabase();
 
     // Route satellite-store decode entries straight into our maps instead of
-    // temp vectors. Must be paired — disarm before any other NodeDatabase decode.
+    // temp vectors. Must be paired - disarm before any other NodeDatabase decode.
     void armNodeDatabaseDecodeTargets();
     void disarmNodeDatabaseDecodeTargets();
 };
