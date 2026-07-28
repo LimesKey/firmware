@@ -113,6 +113,40 @@ Operating frequency and TX power are runtime settings, not compiled in. Set your
 
 ---
 
+## Field diagnostics (`LKD:` lines)
+
+Built in by default via `-DLIMESKEY_DIAG=1` in this variant's `platformio.ini`. Remove that flag to compile the whole thing away; no other variant is affected.
+
+The firmware emits self-describing `key=value` diagnostic lines through the normal `LOG_*` macros, so they travel the standard `log_record` path and appear in the **stock Meshtastic phone app's debug log** over BLE, as well as on the USB console. The intent is that you download the log after a walk or ride and hand it to a tool (or an LLM) to diagnose PCB, antenna, bus and firmware problems.
+
+**Enable it on the device first:** the BLE log path is gated by `security.debug_log_api_enabled`, which is off by default.
+
+```
+meshtastic --set security.debug_log_api_enabled true
+```
+
+Every line starts with `LKD:` followed by a section name, so custom and stock lines separate with a single grep. One section is emitted per tick, 250 ms apart, sweeping every 30 s — deliberately not a burst, because the BLE log path shares the NimBLE notify pool with `fromNum` notifications.
+
+| Section | What it tells you |
+| --- | --- |
+| `LKD:sys` | uptime, reset reason, free/min/largest-block heap, BLE + Wi-Fi state and RSSI, to-phone queue high-water |
+| `LKD:mem` | per-subsystem heap breakdown (upstream's `MemAudit`), sampled live against the `MemAudit[boot]` baseline |
+| `LKD:lora` | noise floor, RX good/CRC-fail, TX counters, channel + TX airtime utilisation, SX126x device errors |
+| `LKD:gnss` | fix type, sats used/seen, pDOP/hDOP/vDOP, time-to-first-fix, per-message age |
+| `LKD:gnss.cno` | top-4 C/N0 and per-constellation used/seen — C/N0 collapsing across *all* constellations at once is the antenna or shadowing signature |
+| `LKD:gnss.rf` / `LKD:gnss.hw` | jamming indicator, AGC, noise level, antenna supervisor |
+| `LKD:gnss.spi` | shared-bus health: bytes read/written, 0xFF idle fill, ring high-water and overflows, UBX checksum failures |
+| `LKD:evt` | event-driven: fix changes, jamming escalation, ring overflow, rising UBX checksum failures, low heap, high noise floor, device errors |
+
+Reading notes:
+
+- **`ant_valid=0` is deliberate.** This board feeds the active GNSS antenna from its own bias-T and the NEO's `ANT_DET`/`ANT_OFF` pins are not wired, so the antenna supervisor status the module reports is its default. Open/short detection is **not** meaningful here. It's logged anyway so the assumption is visible in the data rather than only in a comment.
+- **Rising `ubxcrc`** in `LKD:gnss.spi` is the signal-integrity indicator — suspect the 22 Ω series resistor and the shared MISO net.
+- **`idle_pct` near 100** means the module isn't talking at all (dead, reset, or its SPI port got misconfigured). Healthy is single digits.
+- **GNSS telemetry is sniffed, not polled.** GPS.cpp enables a few UBX messages on the SPI port and the tap in `UBloxSPIGNSS` reads them off the wire as they flow past to the NMEA parser. Nothing here drives the bus, so it can't contend with the GPS thread's ring buffer or with the SX1262 for `spiLock`.
+
+---
+
 ## Notes
 
 - **Screen + audio excluded** (`MESHTASTIC_EXCLUDE_SCREEN`, `MESHTASTIC_EXCLUDE_AUDIO`) — the 4 MB flash on the ESP32-C6 is tight, matching `tlora_c6`.
