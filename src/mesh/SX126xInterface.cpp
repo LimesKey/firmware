@@ -250,6 +250,21 @@ template <typename T> int16_t SX126xInterface<T>::getCurrentRSSI()
     return (int16_t)round(rssi);
 }
 
+#ifdef LIMESKEY_DIAG
+template <typename T> uint16_t SX126xInterface<T>::getDeviceErrorFlags()
+{
+    // Skip mid-TX so this can't interleave with the send path on the shared bus.
+    if (sendingPacket)
+        return 0;
+
+    // Issued directly rather than via lora.getDeviceErrors(), which RadioLib keeps
+    // protected. GetDeviceErrors (0x17) is a status read and is valid in RX.
+    uint8_t data[2] = {0, 0};
+    module.SPIreadStream(RADIOLIB_SX126X_CMD_GET_DEVICE_ERRORS, data, 2);
+    return ((uint16_t)data[0] << 8) | (uint16_t)data[1];
+}
+#endif
+
 template <typename T> void SX126xInterface<T>::enableInterrupt(void (*callback)())
 {
 #ifdef LORA_DIO1_SOFTWARE_POLL

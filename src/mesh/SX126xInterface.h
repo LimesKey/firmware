@@ -33,6 +33,12 @@ template <class T> class SX126xInterface : public RadioLibInterface
 
     void setTCXOVoltage(float voltage) { tcxoVoltage = voltage; }
 
+#ifdef LIMESKEY_DIAG
+    /// SX126x GetDeviceErrors (0x17). A status command, safe while receiving, but
+    /// skipped mid-TX so it can't collide with the send path on the SPI bus.
+    uint16_t getDeviceErrorFlags() override;
+#endif
+
   protected:
     float currentLimit = 140; // Higher OCP limit for SX126x PA
     float tcxoVoltage = 0.0;

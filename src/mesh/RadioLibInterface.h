@@ -170,6 +170,26 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     uint32_t rxBad = 0, rxGood = 0, txGood = 0, txRelay = 0;
     uint16_t txDrop = 0;
 
+#ifdef LIMESKEY_DIAG
+    /**
+     * Chip-reported device/error status word for the field diagnostics, or 0 when
+     * the driver has nothing equivalent. Implementations must not disturb an
+     * active RX/TX. See src/limeskey/LimeskeyDiag.cpp.
+     */
+    virtual uint16_t getDeviceErrorFlags() { return 0; }
+
+    /**
+     * Take a noise-floor sample now, subject to updateNoiseFloor()'s own 5 s
+     * throttle and its idle-RX gate (so this cannot disturb a TX or an active RX).
+     *
+     * The sampler is otherwise only driven from DeviceTelemetry, whose interval is
+     * measured in minutes to hours - far too slow to track interference across a
+     * ride, and slow enough that getNoiseFloor() can sit at its -120 dBm default
+     * for the whole log.
+     */
+    void sampleNoiseFloor() { updateNoiseFloor(); }
+#endif
+
   public:
     RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                       RADIOLIB_PIN_TYPE busy, PhysicalLayer *iface = NULL);
