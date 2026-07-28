@@ -4,9 +4,8 @@
 
 #include "SPILock.h" // spiLock + concurrency::LockGuard
 
-#ifdef LIMESKEY_DIAG
+// Always included: the tap compiles to pass-through stubs without LIMESKEY_DIAG.
 #include "limeskey/LimeskeyDiag.h"
-#endif
 
 // The one global instance. GPS::_serial_gps points at this via GPS_SERIAL_PORT.
 UBloxSPIGNSS ubloxSPIGNSS;
@@ -78,19 +77,37 @@ void UBloxSPIGNSS::drain(size_t maxBytes)
     for (size_t n = 0; n < maxBytes; n++) {
         uint8_t b = GPS_SPI_BUS.transfer(0xFF);
 #ifdef LIMESKEY_DIAG
-        // Tap every clocked byte *before* the ring, so the UBX parser sees frames whole:
-        // the idle-run rewind below can drop real UBX bytes out of the ring (a payload may
-        // legitimately contain 4+ consecutive 0xFF), and GPS.cpp's NMEA parser discards
-        // UBX anyway. The parser tracks UBX's explicit length field, so 0xFF filler
-        // between frames does not confuse it.
         _stats.bytesRead++;
         if (b == 0xFF)
             _stats.bytesIdle++;
-        limeskeydiag::ubxTapFeed(b);
 #endif
-        if (!ringPush(b))
-            break; // ring full
-        if (b == 0xFF) {
+
+        // Every byte goes through the tap before the ring. It decodes and withholds
+        // the diagnostic messages, and passes everything else (NMEA, ACK/NAK,
+        // MON-VER) straight back. Without the flag this is a pass-through stub.
+        uint8_t rel[LIMESKEY_UBX_TAP_MAX_RELEASE];
+        const uint8_t nrel = limeskeydiag::ubxTapFeed(b, rel);
+
+        bool ringFull = false;
+        for (uint8_t i = 0; i < nrel; i++) {
+            if (!ringPush(rel[i])) {
+                ringFull = true;
+                break;
+            }
+        }
+        if (ringFull)
+            break;
+
+        // A run of 0xFF only means "module buffer empty" between frames. Inside a
+        // UBX frame it is ordinary payload (an unset field reads as all-ones), and
+        // counting it used to truncate the frame and cost the NMEA stream the rest
+        // of the poll.
+        if (nrel == 0 || limeskeydiag::ubxTapInFrame()) {
+            idle = 0;
+            continue;
+        }
+
+        if (rel[nrel - 1] == 0xFF) {
             if (++idle >= GPS_SPI_IDLE_RUN) {
                 // Trailing filler run => buffer empty. Remove the run we just pushed.
                 _head = (_head + GPS_SPI_RINGBUF - idle) % GPS_SPI_RINGBUF;
@@ -146,10 +163,15 @@ size_t UBloxSPIGNSS::write(const uint8_t *buffer, size_t size)
         _stats.bytesRead++;
         if (r == 0xFF)
             _stats.bytesIdle++;
-        limeskeydiag::ubxTapFeed(r);
 #endif
-        if (r != 0xFF)
-            ringPush(r); // capture data the module streams back during the write
+        // Same filtering as drain(): capture what the module streams back during a
+        // write, minus the diagnostic frames. ACKs must survive this path - getACK()
+        // reads them right after the command that is being written here.
+        uint8_t rel[LIMESKEY_UBX_TAP_MAX_RELEASE];
+        const uint8_t nrel = limeskeydiag::ubxTapFeed(r, rel);
+        for (uint8_t k = 0; k < nrel; k++)
+            if (rel[k] != 0xFF)
+                ringPush(rel[k]);
     }
     digitalWrite(GPS_SPI_CS_PIN, HIGH);
     GPS_SPI_BUS.endTransaction();

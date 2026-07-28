@@ -108,7 +108,8 @@ static struct {
     uint8_t cls, id;
     uint16_t len, got;
     uint8_t ckA, ckB;
-    bool keep; // buffering this payload (interesting and it fits)
+    bool keep;  // buffering this payload (interesting and it fits)
+    bool strip; // withholding this frame from the NMEA parser
     uint8_t buf[kMaxPayload];
 } p;
 
@@ -232,47 +233,96 @@ static inline bool interesting(uint8_t cls, uint8_t id)
     return k == kNavSat || k == kNavDop || k == kNavStatus || k == kMonRf || k == kMonHw;
 }
 
-void ubxTapFeed(uint8_t b)
+bool ubxTapInFrame()
+{
+    return p.phase != 0;
+}
+
+// Helper for the phases that pass a frame through: hand the byte back unless
+// this is one of our own frames, which is swallowed.
+static inline uint8_t passThrough(uint8_t b, uint8_t *out)
+{
+    if (p.strip)
+        return 0;
+    out[0] = b;
+    return 1;
+}
+
+uint8_t ubxTapFeed(uint8_t b, uint8_t *out)
 {
     switch (p.phase) {
     case 0:
-        if (b == 0xB5)
-            p.phase = 1;
-        return;
+        if (b == 0xB5) {
+            p.phase = 1; // might be a sync pair; hold it until we know
+            return 0;
+        }
+        out[0] = b;
+        return 1;
+
     case 1:
-        // Not 0x62: this wasn't a frame start. 0xB5 again keeps us armed on the
-        // second one rather than dropping a real sync pair split across filler.
-        p.phase = (b == 0x62) ? 2 : (b == 0xB5 ? 1 : 0);
-        return;
+        if (b == 0x62) {
+            p.phase = 2;
+            return 0;
+        }
+        if (b == 0xB5)
+            return 0; // stay armed on the second 0xB5 rather than miss a real sync pair
+        // Not a frame after all. Release the byte we were holding along with this
+        // one, so a stray 0xB5 in the stream costs the NMEA parser nothing.
+        p.phase = 0;
+        out[0] = 0xB5;
+        out[1] = b;
+        return 2;
+
     case 2:
         p.cls = b;
         p.ckA = b;
         p.ckB = b;
         p.phase = 3;
-        return;
+        return 0;
+
     case 3:
         p.id = b;
         p.ckA += b;
         p.ckB += p.ckA;
         p.phase = 4;
-        return;
+        return 0;
+
     case 4:
         p.len = b;
         p.ckA += b;
         p.ckB += p.ckA;
         p.phase = 5;
-        return;
-    case 5:
+        return 0;
+
+    case 5: {
         p.len |= (uint16_t)b << 8;
         p.ckA += b;
         p.ckB += p.ckA;
         p.got = 0;
         stats.framesSeen++;
-        p.keep = interesting(p.cls, p.id) && p.len <= kMaxPayload;
-        if (!p.keep && p.len > kMaxPayload && interesting(p.cls, p.id))
+
+        // Only the messages we asked the module for are withheld. Anything else,
+        // above all ACK/NAK and MON-VER, has to reach GPS::getACK() untouched or
+        // GNSS configuration and probing silently stop working.
+        const bool mine = interesting(p.cls, p.id);
+        p.strip = mine;
+        p.keep = mine && p.len <= kMaxPayload;
+        if (mine && p.len > kMaxPayload)
             stats.oversize++;
         p.phase = p.len ? 6 : 7;
-        return;
+
+        if (p.strip)
+            return 0;
+        // Replay the header we had held back while deciding.
+        out[0] = 0xB5;
+        out[1] = 0x62;
+        out[2] = p.cls;
+        out[3] = p.id;
+        out[4] = (uint8_t)(p.len & 0xFF);
+        out[5] = b;
+        return 6;
+    }
+
     case 6:
         p.ckA += b;
         p.ckB += p.ckA;
@@ -280,17 +330,19 @@ void ubxTapFeed(uint8_t b)
             p.buf[p.got] = b;
         if (++p.got >= p.len)
             p.phase = 7;
-        return;
+        return passThrough(b, out);
+
     case 7:
         // Checksum mismatch here is the SPI signal-integrity signal: the frame
         // was well-formed enough to reach this point but the bytes are corrupt.
         if (b != p.ckA) {
             stats.cksumBad++;
             p.phase = 0;
-            return;
+        } else {
+            p.phase = 8;
         }
-        p.phase = 8;
-        return;
+        return passThrough(b, out);
+
     case 8:
     default:
         if (b == p.ckB) {
@@ -301,7 +353,7 @@ void ubxTapFeed(uint8_t b)
             stats.cksumBad++;
         }
         p.phase = 0;
-        return;
+        return passThrough(b, out);
     }
 }
 

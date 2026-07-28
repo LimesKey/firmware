@@ -143,7 +143,8 @@ Reading notes:
 - **`ant_valid=0` is deliberate.** This board feeds the active GNSS antenna from its own bias-T and the NEO's `ANT_DET`/`ANT_OFF` pins are not wired, so the antenna supervisor status the module reports is its default. Open/short detection is **not** meaningful here. It's logged anyway so the assumption is visible in the data rather than only in a comment.
 - **Rising `ubxcrc`** in `LKD:gnss.spi` is the signal-integrity indicator — suspect the 22 Ω series resistor and the shared MISO net.
 - **`idle_pct` near 100** means the module isn't talking at all (dead, reset, or its SPI port got misconfigured). Healthy is single digits.
-- **GNSS telemetry is sniffed, not polled.** GPS.cpp enables a few UBX messages on the SPI port and the tap in `UBloxSPIGNSS` reads them off the wire as they flow past to the NMEA parser. Nothing here drives the bus, so it can't contend with the GPS thread's ring buffer or with the SX1262 for `spiLock`.
+- **GNSS telemetry is sniffed, not polled.** GPS.cpp enables a few UBX messages on the SPI port and the tap in `UBloxSPIGNSS` reads them off the wire. Nothing here drives the bus, so it can't contend with the GPS thread's ring buffer or with the SX1262 for `spiLock`.
+- **The tap filters, too.** Those five diagnostic messages are withheld from the NMEA parser, because TinyGPS++ would read any `0x24` in a UBX payload as the `$` starting a sentence and log a bogus `GPS checksum failures` warning. Every other frame is released untouched — ACK/NAK and MON-VER have to reach `GPS::getACK()` or configuration and probing break.
 
 ---
 
