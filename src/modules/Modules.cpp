@@ -1,4 +1,7 @@
 #include "configuration.h"
+#ifdef LIMESKEY_DIAG
+#include "limeskey/LimeskeyDiag.h"
+#endif
 #if !MESHTASTIC_EXCLUDE_INPUTBROKER
 #include "buzz/BuzzerFeedbackThread.h"
 #include "modules/SystemCommandsModule.h"
@@ -280,6 +283,9 @@ void setupModules()
 #endif
 #if defined(HAS_HARDWARE_WATCHDOG)
     watchdogThread = new WatchdogThread();
+#endif
+#ifdef LIMESKEY_DIAG
+    limeskeydiag::setup(); // limeskey_node field diagnostics (LKD: log lines)
 #endif
     // NOTE! This module must be added LAST because it likes to check for replies from other modules and avoid sending extra
     // acks
