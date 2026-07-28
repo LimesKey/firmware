@@ -2,6 +2,15 @@
 
 #include "Default.h"
 
+// A search can fail for two very different reasons, and one failure doesn't tell
+// us which: a moving node briefly loses sky view (bridge, tunnel, tree cover, a
+// pocket, a metal mount) and gets it back within seconds to minutes, or a node is
+// somewhere with no sky at all and will keep failing indefinitely. Those want
+// opposite retry policies, so we assume the first for a few failures - retrying
+// quickly, because a hot reacquire lands in seconds - and only then settle into
+// the power-saving cadence that suits the second.
+static constexpr uint32_t kBriefObstructionFailures = 5;
+
 // Mark the time when searching for GPS position begins
 void GPSUpdateScheduling::informSearching()
 {
@@ -50,11 +59,29 @@ uint32_t GPSUpdateScheduling::msUntilNextSearch()
     // Target interval (seconds), between GPS updates
     uint32_t updateInterval = Default::getConfiguredOrDefaultMs(config.position.gps_update_interval, default_gps_update_interval);
 
-    // After a failed search, back off: indoors / no-sky environments will keep failing,
-    // so wake at most once per broadcast interval rather than once per gps_update_interval.
-    // Capped at 1 hour so a user-configured very-long broadcast interval still retries
-    // periodically (in case conditions change). Reset on any successful lock.
-    if (consecutiveFailures > 0) {
+    // Back off after a failed search, progressively. Reset on any successful lock.
+    if (consecutiveFailures > 0 && consecutiveFailures <= kBriefObstructionFailures) {
+        // Assume a brief obstruction first: double the interval per consecutive failure,
+        // clamped to a couple of minutes. Going straight to the broadcast interval here
+        // (which is what we used to do, from the very first failure) meant one shadowed
+        // reacquire on a moving node parked the receiver for up to an hour - the fix
+        // appeared to be dead until the next reboot, even though sky view came back
+        // seconds later.
+        constexpr uint32_t briefObstructionCapMs = 2UL * 60UL * 1000UL; // 2 minute cap
+        uint32_t backoffMs = updateInterval;
+        for (uint32_t i = 1; i < consecutiveFailures && backoffMs < briefObstructionCapMs; i++)
+            backoffMs *= 2; // guarded by the cap check, so this cannot overflow
+        if (backoffMs > briefObstructionCapMs)
+            backoffMs = briefObstructionCapMs;
+        if (updateInterval < backoffMs)
+            updateInterval = backoffMs;
+
+    } else if (consecutiveFailures > 0) {
+        // We've retried quickly and it isn't coming back, so this is a no-sky environment
+        // rather than an obstruction. Wake at most once per broadcast interval rather than
+        // once per gps_update_interval, so a stationary indoor node doesn't burn its
+        // battery retrying forever. Capped at 1 hour so a user-configured very-long
+        // broadcast interval still retries periodically, in case conditions change.
         constexpr uint32_t failureRetryCapMs = 60UL * 60UL * 1000UL; // 1 hour cap
         uint32_t failureSleepMs =
             Default::getConfiguredOrDefaultMs(config.position.position_broadcast_secs, default_broadcast_interval_secs);
@@ -99,17 +126,25 @@ bool GPSUpdateScheduling::isUpdateDue()
 bool GPSUpdateScheduling::searchedTooLong()
 {
     constexpr uint32_t oneMinuteMs = 60UL * 1000UL;
-    constexpr uint32_t maxSearchClampMs = 15UL * oneMinuteMs;   // Hard cap: 15 minutes is always too long
-    constexpr uint32_t postFailureSearchMs = 5UL * oneMinuteMs; // Tighter dwell once we know the environment is hostile
+    constexpr uint32_t maxSearchClampMs = 15UL * oneMinuteMs;        // Hard cap: 15 minutes is always too long
+    constexpr uint32_t briefObstructionSearchMs = 1UL * oneMinuteMs; // Betting on a hot reacquire
+    constexpr uint32_t postFailureSearchMs = 5UL * oneMinuteMs;      // Tighter dwell once we know the environment is hostile
     uint32_t elapsed = elapsedSearchMs();
 
     // Anything over 15 minutes is too long, regardless of the broadcast interval.
     if (elapsed > maxSearchClampMs)
         return true;
 
-    // After a prior failed search, shorten the dwell
-    if (consecutiveFailures > 0 && elapsed > postFailureSearchMs)
-        return true;
+    // After a prior failed search, shorten the dwell. While we're still assuming a brief
+    // obstruction we retry every couple of minutes, so the dwell has to be short too or the
+    // receiver would sit on at a punishing duty cycle; a hot reacquire lands in seconds
+    // anyway, so a minute is generous. Once we've moved to the long backoff the retries are
+    // rare, and the longer dwell is affordable again.
+    if (consecutiveFailures > 0) {
+        const uint32_t dwellMs = consecutiveFailures <= kBriefObstructionFailures ? briefObstructionSearchMs : postFailureSearchMs;
+        if (elapsed > dwellMs)
+            return true;
+    }
 
     uint32_t minimumOrConfiguredSecs =
         Default::getConfiguredOrMinimumValue(config.position.position_broadcast_secs, default_broadcast_interval_secs);
