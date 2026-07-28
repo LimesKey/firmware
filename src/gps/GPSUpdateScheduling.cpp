@@ -9,6 +9,11 @@
 // opposite retry policies, so we assume the first for a few failures - retrying
 // quickly, because a hot reacquire lands in seconds - and only then settle into
 // the power-saving cadence that suits the second.
+//
+// This only applies once we have actually held a fix. Before that the receiver
+// may still be cold: with no current ephemeris it needs an uninterrupted stretch
+// of good signal (tens of seconds per satellite) to acquire at all, and short
+// retries would keep restarting that download instead of finishing it.
 static constexpr uint32_t kBriefObstructionFailures = 5;
 
 // Mark the time when searching for GPS position begins
@@ -60,7 +65,7 @@ uint32_t GPSUpdateScheduling::msUntilNextSearch()
     uint32_t updateInterval = Default::getConfiguredOrDefaultMs(config.position.gps_update_interval, default_gps_update_interval);
 
     // Back off after a failed search, progressively. Reset on any successful lock.
-    if (consecutiveFailures > 0 && consecutiveFailures <= kBriefObstructionFailures) {
+    if (consecutiveFailures > 0 && hasHeldAFix() && consecutiveFailures <= kBriefObstructionFailures) {
         // Assume a brief obstruction first: double the interval per consecutive failure,
         // clamped to a couple of minutes. Going straight to the broadcast interval here
         // (which is what we used to do, from the very first failure) meant one shadowed
@@ -77,11 +82,12 @@ uint32_t GPSUpdateScheduling::msUntilNextSearch()
             updateInterval = backoffMs;
 
     } else if (consecutiveFailures > 0) {
-        // We've retried quickly and it isn't coming back, so this is a no-sky environment
-        // rather than an obstruction. Wake at most once per broadcast interval rather than
-        // once per gps_update_interval, so a stationary indoor node doesn't burn its
-        // battery retrying forever. Capped at 1 hour so a user-configured very-long
-        // broadcast interval still retries periodically, in case conditions change.
+        // Either we've retried quickly and it isn't coming back, or we have never held a
+        // fix at all - both mean a no-sky environment rather than an obstruction. Wake at
+        // most once per broadcast interval rather than once per gps_update_interval, so a
+        // stationary indoor node doesn't burn its battery retrying forever. Capped at 1
+        // hour so a user-configured very-long broadcast interval still retries
+        // periodically, in case conditions change.
         constexpr uint32_t failureRetryCapMs = 60UL * 60UL * 1000UL; // 1 hour cap
         uint32_t failureSleepMs =
             Default::getConfiguredOrDefaultMs(config.position.position_broadcast_secs, default_broadcast_interval_secs);
@@ -140,9 +146,13 @@ bool GPSUpdateScheduling::searchedTooLong()
     // receiver would sit on at a punishing duty cycle; a hot reacquire lands in seconds
     // anyway, so a minute is generous. Once we've moved to the long backoff the retries are
     // rare, and the longer dwell is affordable again.
+    //
+    // The short dwell is only safe once we have held a fix. A receiver that has never
+    // locked may have no valid ephemeris, and a cold acquisition needs an uninterrupted
+    // stretch of signal that a one-minute window would keep cutting short.
     if (consecutiveFailures > 0) {
-        const uint32_t dwellMs = consecutiveFailures <= kBriefObstructionFailures ? briefObstructionSearchMs : postFailureSearchMs;
-        if (elapsed > dwellMs)
+        const bool briefObstruction = hasHeldAFix() && consecutiveFailures <= kBriefObstructionFailures;
+        if (elapsed > (briefObstruction ? briefObstructionSearchMs : postFailureSearchMs))
             return true;
     }
 

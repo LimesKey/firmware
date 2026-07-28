@@ -21,6 +21,13 @@ class GPSUpdateScheduling
 
   private:
     void updateLockTimePrediction(); // Called from informGotLock
+
+    // Have we ever completed a search with a fix? searchCount is only advanced from
+    // informGotLock(), so this separates a receiver that lost a fix it had (ephemeris
+    // still valid, reacquire is quick) from one that has never locked and may need a
+    // full cold start. reset() clears it.
+    bool hasHeldAFix() const { return searchCount > 0; }
+
     uint32_t searchStartedMs = 0;
     uint32_t searchEndedMs = 0;
     uint32_t searchCount = 0;
