@@ -66,3 +66,8 @@ userPrefs.jsonc.mcp-session-bak
 # compiled .proto outputs are ephemeral build artifacts.
 build/fixtures/
 bin/_generated/
+
+# Local-only agent/editor state: this repo's CLAUDE.md is replaced with
+# board-specific notes for the limeskey_node build, don't track that over upstream's.
+CLAUDE.md
+.serena/
