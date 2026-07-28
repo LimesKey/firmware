@@ -123,6 +123,18 @@ static std::atomic<bool> pendingStartAdvertising{false};
 // up-to-20s wait, so a read arriving mid-teardown can't pin the NimBLE task and stall the disconnect.
 static std::atomic<bool> bleDraining{false};
 
+#ifdef LIMESKEY_DIAG
+// Deepest the to-phone queue has been since boot, reported by the LKD: diagnostics.
+// Written under toPhoneMutex on the main task; read unsynchronised from the diag
+// thread, where a torn read of a monotonically rising counter is harmless.
+static std::atomic<uint32_t> limeskeyToPhoneHighWater{0};
+
+uint32_t limeskeyBleToPhoneHighWater()
+{
+    return limeskeyToPhoneHighWater.load();
+}
+#endif
+
 static void clearPairingDisplay()
 {
     if (!passkeyShowing) {
@@ -356,6 +368,10 @@ class BluetoothPhoneAPI : public PhoneAPI, public concurrency::OSThread
                         memcpy(toPhoneQueue[storeAtIndex].data(), fromRadioBytes, numBytes);
                         toPhoneQueueByteSizes[storeAtIndex] = numBytes;
                         toPhoneQueueSize++;
+#ifdef LIMESKEY_DIAG
+                        if (toPhoneQueueSize.load() > limeskeyToPhoneHighWater)
+                            limeskeyToPhoneHighWater = toPhoneQueueSize.load();
+#endif
                     }
 #ifdef DEBUG_NIMBLE_ON_READ_TIMING
                     LOG_DEBUG("BLE getFromRadio returned numBytes=%u, pushed toPhoneQueueSize=%u", numBytes,
