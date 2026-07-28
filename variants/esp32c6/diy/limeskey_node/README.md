@@ -48,6 +48,14 @@ This is a community/DIY variant — there is no dedicated Meshtastic `HardwareMo
 | MOSI   | 18   | shared with LoRa           |
 | MISO   | 20   | shared with LoRa           |
 
+### Battery sense — GPIO0
+
+| Signal        | GPIO | Define                     |
+| ------------- | ---- | -------------------------- |
+| BAT divider   | 0    | `BATTERY_PIN` / `ADC_CHANNEL_0` |
+
+18650 positive through 100k, 100k to GND, with a 100nF at the ADC node to give the SAR sample-and-hold something low-impedance to charge from (50k Thévenin on its own reads low). `ADC_MULTIPLIER 2.0` for the 1:2 ratio. Default 12 dB attenuation covers the 1.5–2.1 V the divider produces across the cell's usable range.
+
 ### I2C — optional / unpopulated
 
 | Signal | GPIO |
@@ -109,4 +117,4 @@ Operating frequency and TX power are runtime settings, not compiled in. Set your
 
 - **Screen + audio excluded** (`MESHTASTIC_EXCLUDE_SCREEN`, `MESHTASTIC_EXCLUDE_AUDIO`) — the 4 MB flash on the ESP32-C6 is tight, matching `tlora_c6`.
 - **Bluetooth** works on the ESP32-C6 (NimBLE) — the phone app pairs over BLE. Note that enabling Wi-Fi disables BLE until reboot (the two radios don't run concurrently here), so you configure over BLE *or* Wi-Fi/USB, not both at once. The BLE stack is torn down on that switch; see the teardown-race fix in `src/nimble/NimbleBluetooth.cpp` (a long-polling `FromRadio` read used to write into a freed characteristic and corrupt the heap).
-- **Battery:** no battery monitoring is configured in this variant yet (battery circuitry is present on the PCB but lower priority). Add `BATTERY_PIN` / `ADC_MULTIPLIER` once the divider is finalized.
+- **Battery:** monitored on GPIO0 through a 100k/100k divider (see the pinout section). `ADC_MULTIPLIER` is the nominal 2.0; resistor tolerance and ADC offset mean the reported voltage will be a little off until trimmed. Compare against a DMM on the cell and correct with the runtime `config.power.adc_multiplier_override` power setting rather than editing `variant.h`, so the calibration is per-board and survives a reflash.

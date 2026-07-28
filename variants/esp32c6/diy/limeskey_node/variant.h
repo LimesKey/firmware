@@ -27,6 +27,29 @@
 #define LED_STATE_ON 0 // LED lit when pin driven LOW
 
 // ---------------------------------------------------------------------------
+// Battery sense — 18650 through a 1:2 divider into GPIO0 (XIAO pad A0)
+// ---------------------------------------------------------------------------
+// BAT+ ──100k──┬── GPIO0 ──┐
+//              100k       100nF     (both to GND)
+// The ESP32-C6 has a single ADC unit, and GPIO0 is ADC1_CH0, so
+// BAT_MEASURE_ADC_UNIT stays undefined (Power.cpp defaults to ADC_UNIT_1).
+#define BATTERY_PIN 0
+#define ADC_CHANNEL ADC_CHANNEL_0
+
+// 100k series + 100k to GND = 1:2. This matches Power.cpp's fallback, but is
+// stated here so the divider is documented where the resistors are described.
+// Trim against a DMM via the runtime config.power.adc_multiplier_override
+// (no reflash) before changing this number.
+#define ADC_MULTIPLIER 2.0457
+
+// ADC_ATTENUATION is deliberately left undefined: Power.cpp defaults to
+// ADC_ATTEN_DB_12, usable to ~3.1 V on the C6, and a full 4.2 V cell reads
+// 2.1 V here. Do NOT copy the ADC_ATTEN_DB_2_5 other variants use for their
+// higher-ratio dividers — it saturates near 1.1 V and would clip most of the
+// discharge curve. There is no ADC_CTRL switch: the divider draws ~21 uA
+// continuously (~0.5 mAh/day, negligible against an 18650).
+
+// ---------------------------------------------------------------------------
 // LoRa — EBYTE E22P-915M30S (SX1262) on the default SPI bus
 // ---------------------------------------------------------------------------
 //   SX1262 fn   E22P pin   net            ESP32-C6 GPIO
