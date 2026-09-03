@@ -1,4 +1,4 @@
-# limeskey-node — ESP32-C6 + E22P-915M30S + NEO-M9N
+# parsnip-node — ESP32-C6 + E22P-915M30S + NEO-M9N
 
 A custom, battery-powered handheld Meshtastic node built around the **Seeed XIAO ESP32-C6**, an **EBYTE E22P-915M30S** (SX1262 + 30 dBm PA) LoRa module, and a **u-blox NEO-M9N** GNSS receiver. Reports to the mesh as `PRIVATE_HW`.
 

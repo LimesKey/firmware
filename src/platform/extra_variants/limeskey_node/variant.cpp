@@ -2,7 +2,7 @@
 
 #ifdef _VARIANT_LIMESKEY_NODE
 
-// limeskey-node board-specific early init.
+// parsnip-node board-specific early init.
 //
 // The u-blox NEO-M9N is wired in SPI mode and shares the LoRa SPI bus (it sits
 // on the same /MISO and /MOSI nets as the SX1262). It is driven by the SPI GNSS

@@ -1,4 +1,4 @@
-// limeskey-node — custom handheld Meshtastic node
+// parsnip-node — custom handheld Meshtastic node
 // MCU : Seeed XIAO ESP32-C6 (castellated SMD module, 4 MB flash)
 // LoRa: EBYTE E22P-915M30S (SX1262 + 30 dBm PA), SPI
 // GNSS: u-blox NEO-M9N, SPI (D_SEL strapped to GND) — see GNSS note below
